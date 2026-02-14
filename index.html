@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BaldieEnglish — Учитель</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Лобби (создание игры) -->
+    <div id="lobby" class="lobby-container">
+        <div class="lobby-header">
+            <h1>🏫 BaldieEnglish</h1>
+            <h2>Учительская панель</h2>
+        </div>
+        
+        <button id="createGameBtn" class="start-btn">Создать новую игру</button>
+        
+        <div id="gameCodeDisplay" class="game-code" style="display: none;">
+            <div>Код игры:</div>
+            <div class="code" id="gameCode">XXXXXX</div>
+            <div style="margin-top: 1rem; color: #888;">Скажите код ученикам</div>
+        </div>
+        
+        <div id="lobbyTeams" style="display: none;">
+            <div class="teams-container">
+                <div class="team-card team1">
+                    <h3>🔴 Команда 1</h3>
+                    <ul id="team1Players" class="players-list"></ul>
+                </div>
+                <div class="team-card team2">
+                    <h3>🔵 Команда 2</h3>
+                    <ul id="team2Players" class="players-list"></ul>
+                </div>
+                <div class="team-card team3">
+                    <h3>🟢 Команда 3</h3>
+                    <ul id="team3Players" class="players-list"></ul>
+                </div>
+            </div>
+            
+            <button id="startGameBtn" class="start-btn">Начать игру</button>
+        </div>
+    </div>
+    
+    <!-- Экран учителя (карта) -->
+    <div id="teacherGame" class="teacher-container" style="display: none;">
+        <div class="game-header">
+            <div class="team-scores">
+                <span class="team-score-badge team1" id="score1">🔴 0</span>
+                <span class="team-score-badge team2" id="score2">🔵 0</span>
+                <span class="team-score-badge team3" id="score3">🟢 0</span>
+            </div>
+            <button id="backToLobbyBtn" class="back-btn">← В лобби</button>
+        </div>
+        <canvas id="gameCanvas" width="800" height="800"></canvas>
+    </div>
+
+    <script type="module">
+        import { createGame } from './script.js';
+        import { database } from './firebase-config.js';
+        import { ref, onValue, update } from 'firebase/database';
+        
+        let currentGameCode = null;
+        
+        document.getElementById('createGameBtn').onclick = () => {
+            currentGameCode = createGame();
+            document.getElementById('gameCode').textContent = currentGameCode;
+            document.getElementById('gameCodeDisplay').style.display = 'block';
+            document.getElementById('lobbyTeams').style.display = 'block';
+            
+            // Слушаем изменения в игре
+            const gameRef = ref(database, `games/${currentGameCode}`);
+            onValue(gameRef, (snapshot) => {
+                const game = snapshot.val();
+                if(game) {
+                    updateLobby(game);
+                }
+            });
+        };
+        
+        function updateLobby(game) {
+            // Очищаем списки игроков
+            ['team1', 'team2', 'team3'].forEach(team => {
+                const list = document.getElementById(`${team}Players`);
+                list.innerHTML = '';
+            });
+            
+            // Заполняем игроками
+            if(game.players) {
+                Object.values(game.players).forEach(player => {
+                    const li = document.createElement('li');
+                    li.textContent = player.name;
+                    document.getElementById(`${player.team}Players`).appendChild(li);
+                });
+            }
+        }
+        
+        document.getElementById('startGameBtn').onclick = () => {
+            if(currentGameCode) {
+                update(ref(database, `games/${currentGameCode}`), {
+                    status: 'playing'
+                });
+                
+                document.getElementById('lobby').style.display = 'none';
+                document.getElementById('teacherGame').style.display = 'flex';
+                startGame(currentGameCode);
+            }
+        };
+        
+        document.getElementById('backToLobbyBtn').onclick = () => {
+            document.getElementById('teacherGame').style.display = 'none';
+            document.getElementById('lobby').style.display = 'block';
+        };
+        
+        function startGame(gameCode) {
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
+            
+            const gameRef = ref(database, `games/${gameCode}`);
+            onValue(gameRef, (snapshot) => {
+                const game = snapshot.val();
+                if(game && game.status === 'playing') {
+                    drawMap(ctx, game);
+                    updateScores(game);
+                }
+            });
+        }
+        
+        function drawMap(ctx, game) {
+            ctx.clearRect(0, 0, 800, 800);
+            
+            // Рисуем сетку
+            ctx.strokeStyle = '#444';
+            ctx.lineWidth = 1;
+            for(let i = 0; i <= 15; i++) {
+                ctx.beginPath();
+                ctx.moveTo(i * 50, 0);
+                ctx.lineTo(i * 50, 800);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(0, i * 50);
+                ctx.lineTo(800, i * 50);
+                ctx.stroke();
+            }
+            
+            // Рисуем тетрадки
+            if(game.notebooks) {
+                Object.values(game.notebooks).forEach(n => {
+                    if(!n.collected) {
+                        ctx.fillStyle = '#ffd700';
+                        ctx.beginPath();
+                        ctx.arc(n.x * 50 + 25, n.y * 50 + 25, 15, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                });
+            }
+            
+            // Рисуем игроков
+            if(game.players) {
+                Object.values(game.players).forEach(p => {
+                    ctx.fillStyle = game.teams[p.team].color;
+                    ctx.beginPath();
+                    ctx.arc(p.x * 50 + 25, p.y * 50 + 25, 20, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // Имя игрока
+                    ctx.fillStyle = 'white';
+                    ctx.font = '12px Arial';
+                    ctx.fillText(p.name, p.x * 50 + 15, p.y * 50 + 10);
+                });
+            }
+            
+            // Рисуем Baldi
+            if(game.baldi) {
+                ctx.fillStyle = '#ff0000';
+                ctx.beginPath();
+                ctx.arc(game.baldi.x * 50 + 25, game.baldi.y * 50 + 25, 25, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 16px Arial';
+                ctx.fillText('👨‍🏫', game.baldi.x * 50 + 15, game.baldi.y * 50 + 30);
+            }
+        }
+        
+        function updateScores(game) {
+            document.getElementById('score1').textContent = `🔴 ${game.teams.team1.score || 0}`;
+            document.getElementById('score2').textContent = `🔵 ${game.teams.team2.score || 0}`;
+            document.getElementById('score3').textContent = `🟢 ${game.teams.team3.score || 0}`;
+        }
+    </script>
+</body>
+</html>
