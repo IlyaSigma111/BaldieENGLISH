@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BaldieEnglish — Ученик</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="joinForm" class="player-container">
+        <div class="join-form">
+            <h1>🏫 BaldieEnglish</h1>
+            <h2 style="color: #888; margin-bottom: 2rem;">Вход в игру</h2>
+            
+            <input type="text" id="gameCodeInput" placeholder="Код игры" maxlength="6">
+            <input type="text" id="playerName" placeholder="Твое имя">
+            
+            <select id="teamSelect">
+                <option value="team1">🔴 Команда 1</option>
+                <option value="team2">🔵 Команда 2</option>
+                <option value="team3">🟢 Команда 3</option>
+            </select>
+            
+            <button id="joinGameBtn" class="join-btn">Присоединиться</button>
+        </div>
+    </div>
+    
+    <div id="playerGame" style="display: none;">
+        <div class="team-score" id="playerTeamScore">🔴 0</div>
+        
+        <canvas id="playerCanvas" class="game-canvas" width="400" height="400"></canvas>
+        
+        <div class="controls">
+            <button class="control-btn up" id="moveUp">⬆️</button>
+            <button class="control-btn left" id="moveLeft">⬅️</button>
+            <button class="control-btn down" id="moveDown">⬇️</button>
+            <button class="control-btn right" id="moveRight">➡️</button>
+        </div>
+    </div>
+    
+    <div id="questionPopup" class="question-popup">
+        <h3 id="questionText">Вопрос</h3>
+        <input type="text" id="answerInput" placeholder="Твой ответ">
+        <button id="submitAnswer">Ответить</button>
+    </div>
+    
+    <div id="caughtMessage" class="caught-message">
+        <h2>😱 BALDI ПОЙМАЛ ТЕБЯ!</h2>
+        <p>Подожди 10 секунд...</p>
+    </div>
+
+    <script type="module">
+        import { database } from './firebase-config.js';
+        import { ref, onValue, update, push } from 'firebase/database';
+        
+        let playerId = null;
+        let gameCode = null;
+        let currentTeam = null;
+        let playerName = '';
+        let currentQuestion = null;
+        let isCaught = false;
+        let caughtTimer = null;
+        
+        document.getElementById('joinGameBtn').onclick = () => {
+            gameCode = document.getElementById('gameCodeInput').value.toUpperCase();
+            playerName = document.getElementById('playerName').value;
+            currentTeam = document.getElementById('teamSelect').value;
+            
+            if(!gameCode || !playerName) {
+                alert('Введи код игры и имя!');
+                return;
+            }
+            
+            // Проверяем существование игры
+            const gameRef = ref(database, `games/${gameCode}`);
+            onValue(gameRef, (snapshot) => {
+                const game = snapshot.val();
+                if(game && game.status === 'waiting') {
+                    // Добавляем игрока
+                    const playersRef = ref(database, `games/${gameCode}/players`);
+                    const newPlayerRef = push(playersRef);
+                    playerId = newPlayerRef.key;
+                    
+                    update(newPlayerRef, {
+                        name: playerName,
+                        team: currentTeam,
+                        x: Math.floor(Math.random() * 10) + 2,
+                        y: Math.floor(Math.random() * 10) + 2,
+                        notebooks: 0,
+                        caught: false
+                    });
+                    
+                    // Показываем игровой экран
+                    document.getElementById('joinForm').style.display = 'none';
+                    document.getElementById('playerGame').style.display = 'block';
+                    document.getElementById('playerCanvas').style.display = 'block';
+                    
+                    // Запускаем игру
+                    startPlayerGame(gameCode, playerId);
+                } else if(game && game.status === 'playing') {
+                    // Можно добавить логику для присоединения к уже начатой игре
+                    alert('Игра уже началась!');
+                } else {
+                    alert('Игра не найдена!');
+                }
+            }, { onlyOnce: true });
+        };
+        
+        function startPlayerGame(code, pId) {
+            const canvas = document.getElementById('playerCanvas');
+            const ctx = canvas.getContext('2d');
+            
+            const gameRef = ref(database, `games/${code}`);
+            onValue(gameRef, (snapshot) => {
+                const game = snapshot.val();
+                if(game) {
+                    drawPlayerView(ctx, game, pId);
+                    updateTeamScore(game, pId);
+                    
+                    // Проверяем, не пойман ли игрок
+                    const player = game.players[pId];
+                    if(player && player.caught && !isCaught) {
+                        catchPlayer();
+                    }
+                }
+            });
+            
+            // Управление
+            document.getElementById('moveUp').onclick = () => move('up', code, pId);
+            document.getElementById('moveDown').onclick = () => move('down', code, pId);
+            document.getElementById('moveLeft').onclick = () => move('left', code, pId);
+            document.getElementById('moveRight').onclick = () => move('right', code, pId);
+            
+            // Ответ на вопрос
+            document.getElementById('submitAnswer').onclick = () => {
+                const answer = document.getElementById('answerInput').value.toLowerCase().trim();
+                if(currentQuestion && answer === currentQuestion.answer.toLowerCase()) {
+                    // Правильно! Забираем тетрадку
+                    update(ref(database, `games/${code}/notebooks/${currentQuestion.id}`), {
+                        collected: true
+                    });
+                    
+                    // Увеличиваем счет команды
+                    const gameRef = ref(database, `games/${code}`);
+                    onValue(gameRef, (snapshot) => {
+                        const game = snapshot.val();
+                        if(game) {
+                            const teamScore = game.teams[currentTeam].score || 0;
+                            update(ref(database, `games/${code}/teams/${currentTeam}`), {
+                                score: teamScore + 1
+                            });
+                        }
+                    }, { onlyOnce: true });
+                    
+                    // Закрываем попап
+                    document.getElementById('questionPopup').classList.remove('active');
+                    currentQuestion = null;
+                } else {
+                    // Неправильно! Привлекаем Baldi
+                    alert('Неправильно! Baldi услышал тебя...');
+                    document.getElementById('questionPopup').classList.remove('active');
+                    currentQuestion = null;
+                    
+                    // Телепортируем Baldi ближе (упрощенно)
+                    // Тут можно добавить логику приближения Baldi
+                }
+            };
+        }
+        
+        function drawPlayerView(ctx, game, pId) {
+            const player = game.players[pId];
+            if(!player) return;
+            
+            ctx.clearRect(0, 0, 400, 400);
+            
+            // Рисуем сетку (только ближайшие клетки)
+            const viewSize = 5;
+            const startX = Math.max(0, player.x - 2);
+            const startY = Math.max(0, player.y - 2);
+            
+            ctx.strokeStyle = '#444';
+            ctx.lineWidth = 1;
+            
+            for(let i = 0; i <= viewSize; i++) {
+                for(let j = 0; j <= viewSize; j++) {
+                    ctx.strokeRect(i * 80, j * 80, 80, 80);
+                }
+            }
+            
+            // Рисуем игрока в центре
+            ctx.fillStyle = game.teams[player.team].color;
+            ctx.beginPath();
+            ctx.arc(200, 200, 30, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 16px Arial';
+            ctx.fillText('🧑', 185, 210);
+            
+            // Рисуем видимые тетрадки
+            if(game.notebooks) {
+                Object.entries(game.notebooks).forEach(([id, n]) => {
+                    if(!n.collected && Math.abs(n.x - player.x) <= 2 && Math.abs(n.y - player.y) <= 2) {
+                        const screenX = (n.x - startX) * 80 + 40;
+                        const screenY = (n.y - startY) * 80 + 40;
+                        
+                        ctx.fillStyle = '#ffd700';
+                        ctx.beginPath();
+                        ctx.arc(screenX, screenY, 20, 0, Math.PI * 2);
+                        ctx.fill();
+                        
+                        // Если рядом, показываем вопрос
+                        if(Math.abs(n.x - player.x) <= 1 && Math.abs(n.y - player.y) <= 1) {
+                            currentQuestion = { ...n, id };
+                            document.getElementById('questionText').textContent = n.question;
+                            document.getElementById('answerInput').value = '';
+                            document.getElementById('questionPopup').classList.add('active');
+                        }
+                    }
+                });
+            }
+            
+            // Рисуем Baldi если близко
+            if(game.baldi && Math.abs(game.baldi.x - player.x) <= 2 && Math.abs(game.baldi.y - player.y) <= 2) {
+                const screenX = (game.baldi.x - startX) * 80 + 40;
+                const screenY = (game.baldi.y - startY) * 80 + 40;
+                
+                ctx.fillStyle = '#ff0000';
+                ctx.beginPath();
+                ctx.arc(screenX, screenY, 35, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 20px Arial';
+                ctx.fillText('👨‍🏫', screenX - 15, screenY + 5);
+            }
+        }
+        
+        function updateTeamScore(game, pId) {
+            const player = game.players[pId];
+            if(player) {
+                const score = game.teams[player.team].score || 0;
+                const teamColors = { team1: '🔴', team2: '🔵', team3: '🟢' };
+                document.getElementById('playerTeamScore').textContent = 
+                    `${teamColors[player.team]} ${score}`;
+            }
+        }
+        
+        function move(direction, gameCode, playerId) {
+            if(isCaught) return;
+            
+            const gameRef = ref(database, `games/${gameCode}`);
+            onValue(gameRef, (snapshot) => {
+                const game = snapshot.val();
+                if(game) {
+                    const player = game.players[playerId];
+                    if(!player) return;
+                    
+                    let newX = player.x;
+                    let newY = player.y;
+                    
+                    switch(direction) {
+                        case 'up': newY--; break;
+                        case 'down': newY++; break;
+                        case 'left': newX--; break;
+                        case 'right': newX++; break;
+                    }
+                    
+                    // Границы карты
+                    if(newX >= 0 && newX < 15 && newY >= 0 && newY < 15) {
+                        update(ref(database, `games/${gameCode}/players/${playerId}`), {
+                            x: newX,
+                            y: newY
+                        });
+                    }
+                }
+            }, { onlyOnce: true });
+        }
+        
+        function catchPlayer() {
+            isCaught = true;
+            document.getElementById('caughtMessage').classList.add('active');
+            
+            caughtTimer = setTimeout(() => {
+                isCaught = false;
+                document.getElementById('caughtMessage').classList.remove('active');
+            }, 10000);
+        }
+    </script>
+</body>
+</html>
